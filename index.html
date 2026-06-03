@@ -1,9 +1,19 @@
-const JSONBIN_KEY = '$2a$10$jE4c1oukwNhoOlYX/w75iOJcynmuXoZyd5efYWBgErRz9mYn5tqZm';
-const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID || '';
+const JSONBIN_KEY = '$2a$10$qWQV2m9uKwP3kulUipXILO3i9KBk.l3ebzXnWeq9HF.IZvOpdKhmm';
 
-async function getBinId() {
-  // 저장된 Bin ID 없으면 새로 생성
-  const res = await fetch('https://api.jsonbin.io/v3/b', {
+async function getOrCreateBin() {
+  // 기존 bin 목록 조회
+  const listRes = await fetch('https://api.jsonbin.io/v3/b', {
+    headers: { 'X-Master-Key': JSONBIN_KEY }
+  });
+  const bins = await listRes.json();
+
+  if (Array.isArray(bins)) {
+    const found = bins.find(b => b.metadata?.name === 'samsung-vote');
+    if (found) return found.metadata.id;
+  }
+
+  // 없으면 새로 생성
+  const createRes = await fetch('https://api.jsonbin.io/v3/b', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -12,11 +22,11 @@ async function getBinId() {
     },
     body: JSON.stringify({ buy: 0, sell: 0, ips: [] })
   });
-  const data = await res.json();
-  return data.metadata.id;
+  const created = await createRes.json();
+  return created.metadata.id;
 }
 
-async function getVoteData(binId) {
+async function getRecord(binId) {
   const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`, {
     headers: { 'X-Master-Key': JSONBIN_KEY }
   });
@@ -24,7 +34,7 @@ async function getVoteData(binId) {
   return data.record;
 }
 
-async function saveVoteData(binId, record) {
+async function saveRecord(binId, record) {
   await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
     method: 'PUT',
     headers: {
@@ -46,27 +56,12 @@ exports.handler = async function(event, context) {
   }
 
   try {
-    // Bin 목록에서 samsung-vote bin 찾기
-    const listRes = await fetch('https://api.jsonbin.io/v3/b?meta=false', {
-      headers: { 'X-Master-Key': JSONBIN_KEY }
-    });
-    const bins = await listRes.json();
-    
-    let binId = JSONBIN_BIN_ID;
-    if (!binId) {
-      // 이름으로 찾기
-      const found = Array.isArray(bins) && bins.find(b => b.record?.binName === 'samsung-vote' || b.metadata?.name === 'samsung-vote');
-      if (found) {
-        binId = found.metadata?.id || found.id;
-      } else {
-        binId = await getBinId();
-      }
-    }
+    const binId = await getOrCreateBin();
 
     // GET: 현재 투표 현황
     if (event.httpMethod === 'GET') {
-      const record = await getVoteData(binId);
-      return { statusCode: 200, headers, body: JSON.stringify({ buy: record.buy || 0, sell: record.sell || 0, binId }) };
+      const record = await getRecord(binId);
+      return { statusCode: 200, headers, body: JSON.stringify({ buy: record.buy || 0, sell: record.sell || 0 }) };
     }
 
     // POST: 투표
@@ -80,7 +75,7 @@ exports.handler = async function(event, context) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid choice' }) };
       }
 
-      const record = await getVoteData(binId);
+      const record = await getRecord(binId);
       const ips = record.ips || [];
 
       if (ips.includes(ip)) {
@@ -89,8 +84,7 @@ exports.handler = async function(event, context) {
 
       record[choice] = (record[choice] || 0) + 1;
       record.ips = [...ips, ip];
-
-      await saveVoteData(binId, record);
+      await saveRecord(binId, record);
 
       return { statusCode: 200, headers, body: JSON.stringify({ alreadyVoted: false, results: { buy: record.buy, sell: record.sell } }) };
     }
