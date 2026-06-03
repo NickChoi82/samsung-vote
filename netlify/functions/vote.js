@@ -1,3 +1,5 @@
+const { getStore } = require("@netlify/blobs");
+
 exports.handler = async function(event, context) {
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -9,16 +11,14 @@ exports.handler = async function(event, context) {
   }
 
   try {
-    const { blobs } = context;
+    const store = getStore({ name: 'votes', consistency: 'strong' });
 
-    // GET: 현재 투표 현황
     if (event.httpMethod === 'GET') {
-      const raw = await blobs.get('results');
+      const raw = await store.get('results');
       const data = raw ? JSON.parse(raw) : { buy: 0, sell: 0 };
       return { statusCode: 200, headers, body: JSON.stringify(data) };
     }
 
-    // POST: 투표
     if (event.httpMethod === 'POST') {
       const ip = (event.headers['x-forwarded-for'] || '').split(',')[0].trim()
                || event.headers['client-ip']
@@ -29,19 +29,22 @@ exports.handler = async function(event, context) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid choice' }) };
       }
 
-      const voted = await blobs.get('ip_' + ip.replace(/[^a-zA-Z0-9]/g, '_'));
+      const ipKey = 'ip_' + ip.replace(/[^a-zA-Z0-9]/g, '_');
+      const voted = await store.get(ipKey);
       if (voted) {
-        const raw = await blobs.get('results');
+        const raw = await store.get('results');
         const results = raw ? JSON.parse(raw) : { buy: 0, sell: 0 };
         return { statusCode: 200, headers, body: JSON.stringify({ alreadyVoted: true, results }) };
       }
 
-      const raw = await blobs.get('results');
+      const raw = await store.get('results');
       const results = raw ? JSON.parse(raw) : { buy: 0, sell: 0 };
       results[choice] = (results[choice] || 0) + 1;
 
-      await blobs.set('results', JSON.stringify(results));
-      await blobs.set('ip_' + ip.replace(/[^a-zA-Z0-9]/g, '_'), choice);
+      await Promise.all([
+        store.set('results', JSON.stringify(results)),
+        store.set(ipKey, choice)
+      ]);
 
       return { statusCode: 200, headers, body: JSON.stringify({ alreadyVoted: false, results }) };
     }
