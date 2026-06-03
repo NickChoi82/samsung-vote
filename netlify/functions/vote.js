@@ -1,4 +1,47 @@
-const { getStore } = require("@netlify/blobs");
+const JSONBIN_KEY = '$2a$10$qWQV2m9uKwP3kulUipXILO3i9KBk.l3ebzXnWeq9HF.IZvOpdKhmm';
+
+async function getOrCreateBin() {
+  const listRes = await fetch('https://api.jsonbin.io/v3/b', {
+    headers: { 'X-Master-Key': JSONBIN_KEY }
+  });
+  const bins = await listRes.json();
+
+  if (Array.isArray(bins)) {
+    const found = bins.find(b => b.metadata?.name === 'samsung-vote');
+    if (found) return found.metadata.id;
+  }
+
+  const createRes = await fetch('https://api.jsonbin.io/v3/b', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Master-Key': JSONBIN_KEY,
+      'X-Bin-Name': 'samsung-vote'
+    },
+    body: JSON.stringify({ buy: 0, sell: 0, ips: [] })
+  });
+  const created = await createRes.json();
+  return created.metadata.id;
+}
+
+async function getRecord(binId) {
+  const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`, {
+    headers: { 'X-Master-Key': JSONBIN_KEY }
+  });
+  const data = await res.json();
+  return data.record;
+}
+
+async function saveRecord(binId, record) {
+  await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Master-Key': JSONBIN_KEY
+    },
+    body: JSON.stringify(record)
+  });
+}
 
 exports.handler = async function(event, context) {
   const headers = {
@@ -11,12 +54,11 @@ exports.handler = async function(event, context) {
   }
 
   try {
-    const store = getStore({ name: 'votes', consistency: 'strong' });
+    const binId = await getOrCreateBin();
 
     if (event.httpMethod === 'GET') {
-      const raw = await store.get('results');
-      const data = raw ? JSON.parse(raw) : { buy: 0, sell: 0 };
-      return { statusCode: 200, headers, body: JSON.stringify(data) };
+      const record = await getRecord(binId);
+      return { statusCode: 200, headers, body: JSON.stringify({ buy: record.buy || 0, sell: record.sell || 0 }) };
     }
 
     if (event.httpMethod === 'POST') {
@@ -29,24 +71,18 @@ exports.handler = async function(event, context) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid choice' }) };
       }
 
-      const ipKey = 'ip_' + ip.replace(/[^a-zA-Z0-9]/g, '_');
-      const voted = await store.get(ipKey);
-      if (voted) {
-        const raw = await store.get('results');
-        const results = raw ? JSON.parse(raw) : { buy: 0, sell: 0 };
-        return { statusCode: 200, headers, body: JSON.stringify({ alreadyVoted: true, results }) };
+      const record = await getRecord(binId);
+      const ips = record.ips || [];
+
+      if (ips.includes(ip)) {
+        return { statusCode: 200, headers, body: JSON.stringify({ alreadyVoted: true, results: { buy: record.buy || 0, sell: record.sell || 0 } }) };
       }
 
-      const raw = await store.get('results');
-      const results = raw ? JSON.parse(raw) : { buy: 0, sell: 0 };
-      results[choice] = (results[choice] || 0) + 1;
+      record[choice] = (record[choice] || 0) + 1;
+      record.ips = [...ips, ip];
+      await saveRecord(binId, record);
 
-      await Promise.all([
-        store.set('results', JSON.stringify(results)),
-        store.set(ipKey, choice)
-      ]);
-
-      return { statusCode: 200, headers, body: JSON.stringify({ alreadyVoted: false, results }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ alreadyVoted: false, results: { buy: record.buy, sell: record.sell } }) };
     }
 
     return { statusCode: 405, headers, body: JSON.stringify({ error: 'method not allowed' }) };
